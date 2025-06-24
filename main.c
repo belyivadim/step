@@ -116,11 +116,8 @@ void vm_push_instr(Instr instr, Word arg) {
   switch (instr) {
   case INSTR_INT:
     assert(vm.ip + 1 < STACK_CAPACITY);
-    assert(vm.data_offset + sizeof(int) < STACK_CAPACITY);
-    memcpy(vm.data + vm.data_offset, &arg, sizeof(int));
     vm.program[vm.ip++] = (Word)instr;
-    vm.program[vm.ip++] = (Word)vm.data_offset;
-    vm.data_offset += sizeof(int);
+    vm.program[vm.ip++] = arg;
     break;
 
   case INSTR_STRING:
@@ -156,8 +153,7 @@ bool vm_run() {
     case INSTR_INT: {
       assert(vm.sp < STACK_CAPACITY);
       assert(vm.ip + 1 < STACK_CAPACITY);
-      int offset = vm.program[++vm.ip];
-      int value = (int)vm.data[offset];
+      int value = vm.program[++vm.ip];
       vm.stack[vm.sp++] = (Value){.type = VAL_INT, .integer = value};
       vm.ip += 1;
     } break;
@@ -393,8 +389,7 @@ void vm_dump(void) {
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
-      int offset = vm.program[++ip];
-      int value = (int)vm.data[offset];
+      int value = vm.program[++ip];
       printf("int(%d) ", value);
       ip += 1;
     } break;
