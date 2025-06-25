@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -12,7 +13,9 @@
 
 typedef size_t Word;
 
-typedef enum { VAL_INT = 0, VAL_STR, VAL_COUNT } ValueType;
+typedef enum { VAL_INT = 0,
+               VAL_STR,
+               VAL_COUNT } ValueType;
 
 typedef enum {
   TOK_EOF = 0,
@@ -107,6 +110,9 @@ void value_print(Value value);
 void vm_dump(void);
 void vm_dump_stack(void);
 const char *instr_to_cstr(Instr instr);
+void compile(void);
+int get_file_size(const char *filename);
+bool read_entire_file(const char *filename, Arena *arena);
 
 // === DEFINITIONS ===
 void vm_push_instr(Instr instr, Word arg) {
@@ -448,40 +454,26 @@ void vm_dump(void) {
 }
 
 const char *instr_to_cstr(Instr instr) {
+  // clang-format off
   static_assert(INSTR_COUNT == 8, "Update Instr is required");
   switch (instr) {
-  case INSTR_INT:
-    return "INSTR_INT";
-  case INSTR_STRING:
-    return "INSTR_STRING";
-  case INSTR_ADD:
-    return "INSTR_ADD";
-  case INSTR_SUB:
-    return "INSTR_SUB";
-  case INSTR_MUL:
-    return "INSTR_MUL";
-  case INSTR_DIV:
-    return "INSTR_DIV";
-  case INSTR_DUMP:
-    return "INSTR_DUMP";
-  case INSTR_DONE:
-    return "INSTR_DONE";
-  case INSTR_COUNT:
-    return "INSTR_COUNT";
+  case INSTR_INT:    return "INSTR_INT";
+  case INSTR_STRING: return "INSTR_STRING";
+  case INSTR_ADD:    return "INSTR_ADD";
+  case INSTR_SUB:    return "INSTR_SUB";
+  case INSTR_MUL:    return "INSTR_MUL";
+  case INSTR_DIV:    return "INSTR_DIV";
+  case INSTR_DUMP:   return "INSTR_DUMP";
+  case INSTR_DONE:   return "INSTR_DONE";
+  case INSTR_COUNT:  return "INSTR_COUNT";
   }
   assert(0 && "unreachable");
+  // clang-format on
 }
 
-int main(void) {
-  tokens_init();
-
-  const char *source;
-
-  // source = "-1 2 * 3  + .";
-  source = "\"hello world!\" . -1 2 3 * + .";
-  tokenize(source);
-
+void compile(void) {
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
+    // clang-format off
     static_assert(TOK_COUNT == 8, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
@@ -492,27 +484,84 @@ int main(void) {
       String string = {(char *)t->data, t->len};
       vm_push_instr(INSTR_STRING, (Word)(&string));
     } break;
-    case TOK_PLUS:
-      vm_push_instr(INSTR_ADD, 0);
-      break;
-    case TOK_MINUS:
-      vm_push_instr(INSTR_SUB, 0);
-      break;
-    case TOK_STAR:
-      vm_push_instr(INSTR_MUL, 0);
-      break;
-    case TOK_SLASH:
-      vm_push_instr(INSTR_DIV, 0);
-      break;
-    case TOK_DOT:
-      vm_push_instr(INSTR_DUMP, 0);
-      break;
+    case TOK_PLUS:  vm_push_instr(INSTR_ADD, 0); break;
+    case TOK_MINUS: vm_push_instr(INSTR_SUB, 0); break;
+    case TOK_STAR:  vm_push_instr(INSTR_MUL, 0); break;
+    case TOK_SLASH: vm_push_instr(INSTR_DIV, 0); break;
+    case TOK_DOT:   vm_push_instr(INSTR_DUMP, 0); break;
     default:
       assert(0 && "unreachable");
     }
+    // clang-format off
   }
   vm_push_instr(INSTR_DONE, 0);
+}
 
+int get_file_size(const char *filename) {
+  FILE *f = fopen(filename, "rb");
+  if (!f) {
+    fprintf(stderr, "Error: could not open the file %s: %s\n", filename, strerror(errno));
+    return -1;
+  }
+
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fprintf(stderr, "Error: fseek failed: %s\n", strerror(errno));
+    fclose(f);
+    return -1;
+  }
+
+  int size = ftell(f);
+  fclose(f);
+  return size;
+}
+
+bool read_entire_file(const char *filename, Arena *arena) {
+  bool result = true;
+
+  int size = get_file_size(filename);
+  if (arena->chunk->size < size + 1)
+    return false;
+
+  FILE *f = fopen(filename, "rb");
+  if (f == NULL) {
+    result = false;
+    goto defer;
+  }
+
+  fread(arena->chunk->mem, size, 1, f);
+  if (ferror(f)) {
+    result = false;
+    goto defer;
+  }
+  arena->chunk->mem[size] = '\0';
+
+defer:
+  if (!result)
+    fprintf(stderr, "Could not read file %s: %s\n", filename, strerror(errno));
+  if (f)
+    fclose(f);
+  return result;
+}
+
+int main(int argc, char *argv[]) {
+  if (argc != 2) {
+    fprintf(stderr, "Usage: %s <source.step>\n", argv[0]);
+    return 1;
+  }
+
+  char *source_filename = argv[1];
+  int source_file_size = get_file_size(source_filename);
+  if (source_file_size < 0)
+    return 1;
+
+  Arena source_arena = arena_create(source_file_size + 1);
+  if (!read_entire_file(source_filename, &source_arena))
+    return 1;
+
+  tokens_init();
+
+  tokenize(source_arena.chunk->mem);
+  compile();
   vm_run();
 
   tokens_free();
