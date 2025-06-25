@@ -3,8 +3,8 @@
 SRC = main.c
 FLAGS = -g -Wall -Wextra -pedantic -std=c11
 
-lifo: $(SRC)
-	$(CC) $(FLAGS) -o lifo $(SRC)
+step: $(SRC)
+	$(CC) $(FLAGS) -o step $(SRC)
 
 clean:
-	rm -f lifo
+	rm -f step
