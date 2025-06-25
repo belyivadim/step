@@ -50,7 +50,7 @@ typedef struct {
   union {
     Word word;
     int integer;
-    String *string;
+    char *cstr;
   };
 } Value;
 
@@ -120,9 +120,15 @@ void vm_push_instr(Instr instr, Word arg) {
     vm.program[vm.ip++] = arg;
     break;
 
-  case INSTR_STRING:
-    assert(0 && "INSTR_STRING is not implemented yet");
-    break;
+  case INSTR_STRING: {
+    assert(vm.ip + 1 < STACK_CAPACITY);
+    vm.program[vm.ip++] = (Word)instr;
+    String string = *(String *)arg;
+    memcpy(vm.data + vm.data_offset, string.data, string.len);
+    vm.program[vm.ip++] = (Word)vm.data_offset;
+    vm.data_offset += string.len;
+    vm.data[vm.data_offset++] = '\0';
+  } break;
 
   case INSTR_ADD:
   case INSTR_SUB:
@@ -158,9 +164,13 @@ bool vm_run() {
       vm.ip += 1;
     } break;
 
-    case INSTR_STRING:
-      assert(0 && "INSTR_STRING is not implemented yet");
-      break;
+    case INSTR_STRING: {
+      assert(vm.sp < STACK_CAPACITY);
+      assert(vm.ip + 1 < STACK_CAPACITY);
+      int offset = (int)vm.program[++vm.ip];
+      vm.stack[vm.sp++] = (Value){.type = VAL_STR, .cstr = vm.data + offset};
+      vm.ip += 1;
+    } break;
 
     case INSTR_ADD:
     case INSTR_SUB:
@@ -282,6 +292,13 @@ bool tokenize(const char *source) {
       Token token = {(Location){0}, ptr, end - ptr, TOK_INT};
       make_token(&token);
       ptr = end;
+    } else if (*ptr == '"') {
+      const char *end = ptr + 1;
+      while (*end && *end != '"')
+        ++end;
+      Token token = {(Location){0}, ptr + 1, end - ptr - 1, TOK_STR};
+      make_token(&token);
+      ptr = end + 1;
     } else if (*ptr == '*') {
       Token token = {(Location){0}, ptr, 1, TOK_STAR};
       make_token(&token);
@@ -360,7 +377,7 @@ void value_print(Value value) {
     printf("%d\n", value.integer);
     break;
   case VAL_STR:
-    printf("%s\n", value.string->data);
+    printf("%s\n", value.cstr);
     break;
   default:
     assert(0 && "unreachable");
@@ -460,20 +477,21 @@ int main(void) {
 
   const char *source;
 
-  source = "-1 2 * 3  + .";
+  // source = "-1 2 * 3  + .";
+  source = "\"hello world!\" . -1 2 3 * + .";
   tokenize(source);
 
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
-    // token_print(t);
     static_assert(TOK_COUNT == 8, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
       int i = atoi(t->data);
       vm_push_instr(INSTR_INT, i);
     } break;
-    case TOK_STR:
-      assert(0 && "TOK_STR is not supported by compiler yet");
-      break;
+    case TOK_STR: {
+      String string = {(char *)t->data, t->len};
+      vm_push_instr(INSTR_STRING, (Word)(&string));
+    } break;
     case TOK_PLUS:
       vm_push_instr(INSTR_ADD, 0);
       break;
