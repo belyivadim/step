@@ -26,6 +26,7 @@ typedef enum {
   TOK_STAR,
   TOK_SLASH,
   TOK_DUP,
+  TOK_OVER,
   TOK_DOT,
   TOK_COUNT
 } TokenType;
@@ -79,6 +80,7 @@ typedef enum {
   INSTR_MUL,
   INSTR_DIV,
   INSTR_DUP,
+  INSTR_OVER,
   INSTR_DUMP,
   INSTR_DONE,
   INSTR_COUNT,
@@ -120,7 +122,7 @@ bool read_entire_file(const char *filename, Arena *arena);
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 9, "Update Instr is required");
+  static_assert(INSTR_COUNT == 10, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
     assert(vm.ip + 1 < STACK_CAPACITY);
@@ -144,6 +146,7 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_DIV:
   case INSTR_DUMP:
   case INSTR_DUP:
+  case INSTR_OVER:
   case INSTR_DONE:
     vm.program[vm.ip++] = (Word)instr;
     break;
@@ -163,7 +166,7 @@ bool vm_run() {
 
   for (Instr instr = (Instr)vm.program[vm.ip]; instr != INSTR_DONE;
        instr = (Instr)vm.program[vm.ip]) {
-    static_assert(INSTR_COUNT == 9, "Update Instr is required");
+    static_assert(INSTR_COUNT == 10, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(vm.sp < STACK_CAPACITY);
@@ -208,6 +211,13 @@ bool vm_run() {
     case INSTR_DUP: {
       assert(vm.sp >= 1 && vm.sp + 1 < STACK_CAPACITY);
       vm.stack[vm.sp] = vm.stack[vm.sp - 1];
+      vm.sp += 1;
+      vm.ip += 1;
+    } break;
+
+    case INSTR_OVER: {
+      assert(vm.sp >= 2 && vm.sp + 1 < STACK_CAPACITY);
+      vm.stack[vm.sp] = vm.stack[vm.sp - 2];
       vm.sp += 1;
       vm.ip += 1;
     } break;
@@ -297,8 +307,13 @@ bool tokenize(const char *source) {
   const char *ptr = source;
 
   while (*ptr) {
-    while (*ptr && isspace(*ptr))
+    while (*ptr && isspace(*ptr)) {
+      // if (*ptr == '\n') column += 1;
       ++ptr;
+    }
+
+    if (!*ptr)
+      break;
 
     if (isdigit(*ptr) || (*ptr == '-' && isdigit(ptr[1]))) {
       const char *end = ptr;
@@ -319,6 +334,10 @@ bool tokenize(const char *source) {
       Token token = {(Location){0}, ptr, 3, TOK_DUP};
       make_token(&token);
       ptr += 3;
+    } else if (strncmp(ptr, "over", 4) == 0) {
+      Token token = {(Location){0}, ptr, 4, TOK_OVER};
+      make_token(&token);
+      ptr += 4;
     } else if (*ptr == '*') {
       Token token = {(Location){0}, ptr, 1, TOK_STAR};
       make_token(&token);
@@ -339,6 +358,9 @@ bool tokenize(const char *source) {
       Token token = {(Location){0}, ptr, 1, TOK_DOT};
       make_token(&token);
       ptr += 1;
+    } else {
+      fprintf(stderr, "Unknown/unimplemented token: %s\n", ptr);
+      abort();
     }
   }
 
@@ -367,7 +389,7 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 9, "Update TokenType is required");
+  static_assert(TOK_COUNT == 10, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->len, token->data);
@@ -381,6 +403,7 @@ void token_print(const Token *token) {
   case TOK_SLASH:
   case TOK_DOT:
   case TOK_DUP:
+  case TOK_OVER:
     printf("%.*s\n", token->len, token->data);
     break;
   case TOK_EOF:
@@ -424,7 +447,7 @@ void vm_dump(void) {
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 9, "Update Instr is required");
+    static_assert(INSTR_COUNT == 10, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
@@ -454,6 +477,10 @@ void vm_dump(void) {
       printf("dup ");
       ip += 1;
       break;
+    case INSTR_OVER:
+      printf("over ");
+      ip += 1;
+      break;
     case INSTR_DUMP:
       printf(". ");
       ip += 1;
@@ -477,7 +504,7 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 9, "Update Instr is required");
+  static_assert(INSTR_COUNT == 10, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:    return "INSTR_INT";
   case INSTR_STRING: return "INSTR_STRING";
@@ -486,6 +513,7 @@ const char *instr_to_cstr(Instr instr) {
   case INSTR_MUL:    return "INSTR_MUL";
   case INSTR_DIV:    return "INSTR_DIV";
   case INSTR_DUP:    return "INSTR_DUP";
+  case INSTR_OVER:   return "INSTR_OVER";
   case INSTR_DUMP:   return "INSTR_DUMP";
   case INSTR_DONE:   return "INSTR_DONE";
   case INSTR_COUNT:  return "INSTR_COUNT";
@@ -497,7 +525,7 @@ const char *instr_to_cstr(Instr instr) {
 void compile(void) {
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 9, "Update TokenType is required");
+    static_assert(TOK_COUNT == 10, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
       int i = atoi(t->data);
@@ -513,6 +541,7 @@ void compile(void) {
     case TOK_SLASH: vm_push_instr(INSTR_DIV, 0); break;
     case TOK_DUP:   vm_push_instr(INSTR_DUP, 0); break;
     case TOK_DOT:   vm_push_instr(INSTR_DUMP, 0); break;
+    case TOK_OVER:   vm_push_instr(INSTR_OVER, 0); break;
     default:
       assert(0 && "unreachable");
     }
