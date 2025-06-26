@@ -42,6 +42,12 @@ typedef enum {
   TOK_MINUS_DOT,
   TOK_STAR_DOT,
   TOK_SLASH_DOT,
+  TOK_EQ,
+  TOK_NEQ,
+  TOK_LT,
+  TOK_LE,
+  TOK_GT,
+  TOK_GE,
   TOK_DUP,
   TOK_OVER,
   TOK_SWAP,
@@ -101,6 +107,12 @@ typedef enum {
   INSTR_SUBF,
   INSTR_MULF,
   INSTR_DIVF,
+  INSTR_EQ,
+  INSTR_NEQ,
+  INSTR_LT,
+  INSTR_LE,
+  INSTR_GT,
+  INSTR_GE,
   INSTR_DUP,
   INSTR_OVER,
   INSTR_SWAP,
@@ -147,7 +159,7 @@ bool read_entire_file(const char *filename, Arena *arena);
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 19, "Update Instr is required");
+  static_assert(INSTR_COUNT == 25, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
   case INSTR_FLOAT:
@@ -175,6 +187,12 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_SUBF:
   case INSTR_MULF:
   case INSTR_DIVF:
+  case INSTR_EQ:
+  case INSTR_NEQ:
+  case INSTR_LT:
+  case INSTR_LE:
+  case INSTR_GT:
+  case INSTR_GE:
   case INSTR_DUMP:
   case INSTR_DUP:
   case INSTR_OVER:
@@ -200,7 +218,7 @@ bool vm_run() {
 
   for (Instr instr = (Instr)vm.program[vm.ip].word; instr != INSTR_DONE;
        instr = (Instr)vm.program[vm.ip].word) {
-    static_assert(INSTR_COUNT == 19, "Update Instr is required");
+    static_assert(INSTR_COUNT == 25, "Update Instr is required");
     switch (instr) {
     case INSTR_INT:
     case INSTR_FLOAT: {
@@ -268,6 +286,55 @@ bool vm_run() {
         vm.stack[vm.sp++] =
             (Value){.type = VAL_FLOAT, .float_ = a.float_ / b.float_};
       }
+      vm.ip += 1;
+    } break;
+
+    case INSTR_EQ: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_INT && b.type == VAL_INT);
+      vm.stack[vm.sp++] = (Value){VAL_INT, .integer = a.integer == b.integer};
+      vm.ip += 1;
+    } break;
+    case INSTR_NEQ: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_INT && b.type == VAL_INT);
+      vm.stack[vm.sp++] = (Value){VAL_INT, .integer = a.integer != b.integer};
+      vm.ip += 1;
+    } break;
+    case INSTR_LT: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_INT && b.type == VAL_INT);
+      vm.stack[vm.sp++] = (Value){VAL_INT, .integer = a.integer < b.integer};
+      vm.ip += 1;
+    } break;
+    case INSTR_LE: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_INT && b.type == VAL_INT);
+      vm.stack[vm.sp++] = (Value){VAL_INT, .integer = a.integer <= b.integer};
+      vm.ip += 1;
+    } break;
+    case INSTR_GT: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_INT && b.type == VAL_INT);
+      vm.stack[vm.sp++] = (Value){VAL_INT, .integer = a.integer > b.integer};
+      vm.ip += 1;
+    } break;
+    case INSTR_GE: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_INT && b.type == VAL_INT);
+      vm.stack[vm.sp++] = (Value){VAL_INT, .integer = a.integer >= b.integer};
       vm.ip += 1;
     } break;
 
@@ -468,6 +535,26 @@ bool tokenize(const char *source) {
       Token token = {(Location){0}, ptr, 1, TOK_MOD};
       make_token(&token);
       ptr += 1;
+    } else if (*ptr == '=') {
+      Token token = {(Location){0}, ptr, 1, TOK_EQ};
+      make_token(&token);
+      ptr += 1;
+    } else if (*ptr == '<') {
+      bool is_next_eq = ptr[1] == '=';
+      Token token = is_next_eq ? (Token){(Location){0}, ptr, 2, TOK_LE}
+                               : (Token){(Location){0}, ptr, 1, TOK_LT};
+      make_token(&token);
+      ptr += (1 + is_next_eq);
+    } else if (*ptr == '>') {
+      bool is_next_eq = ptr[1] == '=';
+      Token token = is_next_eq ? (Token){(Location){0}, ptr, 2, TOK_GE}
+                               : (Token){(Location){0}, ptr, 1, TOK_GT};
+      make_token(&token);
+      ptr += (1 + is_next_eq);
+    } else if (*ptr == '!' && ptr[1] == '=') {
+      Token token = {(Location){0}, ptr, 2, TOK_NEQ};
+      make_token(&token);
+      ptr += 2;
     } else if (*ptr == '.') {
       Token token = {(Location){0}, ptr, 1, TOK_DOT};
       make_token(&token);
@@ -503,7 +590,7 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 19, "Update TokenType is required");
+  static_assert(TOK_COUNT == 25, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->len, token->data);
@@ -518,11 +605,17 @@ void token_print(const Token *token) {
   case TOK_MINUS:
   case TOK_STAR:
   case TOK_SLASH:
+  case TOK_MOD:
   case TOK_PLUS_DOT:
   case TOK_MINUS_DOT:
   case TOK_STAR_DOT:
   case TOK_SLASH_DOT:
-  case TOK_MOD:
+  case TOK_EQ:
+  case TOK_NEQ:
+  case TOK_LT:
+  case TOK_LE:
+  case TOK_GT:
+  case TOK_GE:
   case TOK_DOT:
   case TOK_DUP:
   case TOK_OVER:
@@ -575,7 +668,7 @@ void vm_dump(void) {
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 19, "Update Instr is required");
+    static_assert(INSTR_COUNT == 25, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
@@ -627,11 +720,36 @@ void vm_dump(void) {
       printf("/. ");
       ip += 1;
       break;
-
     case INSTR_MOD:
       printf("%% ");
       ip += 1;
       break;
+
+    case INSTR_EQ:
+      printf("=");
+      ip += 1;
+      break;
+    case INSTR_NEQ:
+      printf("!=");
+      ip += 1;
+      break;
+    case INSTR_LT:
+      printf("<");
+      ip += 1;
+      break;
+    case INSTR_LE:
+      printf("<=");
+      ip += 1;
+      break;
+    case INSTR_GT:
+      printf(">");
+      ip += 1;
+      break;
+    case INSTR_GE:
+      printf(">=");
+      ip += 1;
+      break;
+
     case INSTR_DUP:
       printf("dup ");
       ip += 1;
@@ -675,7 +793,7 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 19, "Update Instr is required");
+  static_assert(INSTR_COUNT == 25, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:    return "INSTR_INT";
   case INSTR_FLOAT:  return "INSTR_FLOAT";
@@ -689,6 +807,12 @@ const char *instr_to_cstr(Instr instr) {
   case INSTR_SUBF:   return "INSTR_SUBF";
   case INSTR_MULF:   return "INSTR_MULF";
   case INSTR_DIVF:   return "INSTR_DIVF";
+  case INSTR_EQ:     return "INSTR_EQ";
+  case INSTR_NEQ:    return "INSTR_NEQ";
+  case INSTR_LT:     return "INSTR_LT";
+  case INSTR_LE:     return "INSTR_LE";
+  case INSTR_GT:     return "INSTR_GT";
+  case INSTR_GE:     return "INSTR_GE";
   case INSTR_DUP:    return "INSTR_DUP";
   case INSTR_OVER:   return "INSTR_OVER";
   case INSTR_SWAP:   return "INSTR_SWAP";
@@ -706,7 +830,7 @@ const char *instr_to_cstr(Instr instr) {
 void compile(void) {
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 19, "Update TokenType is required");
+    static_assert(TOK_COUNT == 25, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
       int i = atoi(t->data);
@@ -723,21 +847,27 @@ void compile(void) {
       vm_push_instr(INSTR_STRING, (Word){.word=(word_t)&string});
     } break;
 
-    case TOK_PLUS:  vm_push_instr(INSTR_ADD, word0); break;
-    case TOK_MINUS: vm_push_instr(INSTR_SUB, word0); break;
-    case TOK_STAR:  vm_push_instr(INSTR_MUL, word0); break;
-    case TOK_SLASH: vm_push_instr(INSTR_DIV, word0); break;
-    case TOK_MOD:   vm_push_instr(INSTR_MOD, word0); break;
+    case TOK_PLUS:      vm_push_instr(INSTR_ADD, word0); break;
+    case TOK_MINUS:     vm_push_instr(INSTR_SUB, word0); break;
+    case TOK_STAR:      vm_push_instr(INSTR_MUL, word0); break;
+    case TOK_SLASH:     vm_push_instr(INSTR_DIV, word0); break;
+    case TOK_MOD:       vm_push_instr(INSTR_MOD, word0); break;
     case TOK_PLUS_DOT:  vm_push_instr(INSTR_ADDF, word0); break;
     case TOK_MINUS_DOT: vm_push_instr(INSTR_SUBF, word0); break;
     case TOK_STAR_DOT:  vm_push_instr(INSTR_MULF, word0); break;
     case TOK_SLASH_DOT: vm_push_instr(INSTR_DIVF, word0); break;
-    case TOK_DUP:   vm_push_instr(INSTR_DUP, word0); break;
-    case TOK_DOT:   vm_push_instr(INSTR_DUMP, word0); break;
-    case TOK_OVER:  vm_push_instr(INSTR_OVER, word0); break;
-    case TOK_SWAP:  vm_push_instr(INSTR_SWAP, word0); break;
-    case TOK_DROP:  vm_push_instr(INSTR_DROP, word0); break;
-    case TOK_ROT:   vm_push_instr(INSTR_ROT, word0); break;
+    case TOK_EQ:        vm_push_instr(INSTR_EQ, word0); break;
+    case TOK_NEQ:       vm_push_instr(INSTR_NEQ, word0); break;
+    case TOK_LT:        vm_push_instr(INSTR_LT, word0); break;
+    case TOK_LE:        vm_push_instr(INSTR_LE, word0); break;
+    case TOK_GT:        vm_push_instr(INSTR_GT, word0); break;
+    case TOK_GE:        vm_push_instr(INSTR_GE, word0); break;
+    case TOK_DUP:       vm_push_instr(INSTR_DUP, word0); break;
+    case TOK_DOT:       vm_push_instr(INSTR_DUMP, word0); break;
+    case TOK_OVER:      vm_push_instr(INSTR_OVER, word0); break;
+    case TOK_SWAP:      vm_push_instr(INSTR_SWAP, word0); break;
+    case TOK_DROP:      vm_push_instr(INSTR_DROP, word0); break;
+    case TOK_ROT:       vm_push_instr(INSTR_ROT, word0); break;
     default:
       assert(0 && "unreachable");
     }
