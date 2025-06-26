@@ -10,16 +10,28 @@
 // #define TRACE_EXECUTION
 
 // === TYPES AND GLOBALS ===
+typedef size_t word_t;
 
-typedef size_t Word;
+#define WORD_UNION \
+  union {          \
+    word_t word;   \
+    int integer;   \
+    float float_;  \
+    char *cstr;    \
+  }
+
+typedef WORD_UNION Word;
+Word word0;
 
 typedef enum { VAL_INT = 0,
+               VAL_FLOAT,
                VAL_STR,
                VAL_COUNT } ValueType;
 
 typedef enum {
   TOK_EOF = 0,
   TOK_INT,
+  TOK_FLOAT,
   TOK_STR,
   TOK_PLUS,
   TOK_MINUS,
@@ -55,11 +67,7 @@ typedef struct {
 
 typedef struct {
   ValueType type;
-  union {
-    Word word;
-    int integer;
-    char *cstr;
-  };
+  WORD_UNION;
 } Value;
 
 #define STACK_CAPACITY 256
@@ -77,6 +85,7 @@ typedef struct {
 
 typedef enum {
   INSTR_INT,
+  INSTR_FLOAT,
   INSTR_STRING,
   INSTR_ADD,
   INSTR_SUB,
@@ -128,20 +137,21 @@ bool read_entire_file(const char *filename, Arena *arena);
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 13, "Update Instr is required");
+  static_assert(INSTR_COUNT == 14, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
+  case INSTR_FLOAT:
     assert(vm.ip + 1 < STACK_CAPACITY);
-    vm.program[vm.ip++] = (Word)instr;
+    vm.program[vm.ip++] = (Word){.word = instr};
     vm.program[vm.ip++] = arg;
     break;
 
   case INSTR_STRING: {
     assert(vm.ip + 1 < STACK_CAPACITY);
-    vm.program[vm.ip++] = (Word)instr;
-    String string = *(String *)arg;
+    vm.program[vm.ip++] = (Word){.word = instr};
+    String string = *(String *)arg.word;
     memcpy(vm.data + vm.data_offset, string.data, string.len);
-    vm.program[vm.ip++] = (Word)vm.data_offset;
+    vm.program[vm.ip++] = (Word){.integer = vm.data_offset};
     vm.data_offset += string.len;
     vm.data[vm.data_offset++] = '\0';
   } break;
@@ -157,7 +167,7 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_DROP:
   case INSTR_ROT:
   case INSTR_DONE:
-    vm.program[vm.ip++] = (Word)instr;
+    vm.program[vm.ip++] = (Word){.word = instr};
     break;
 
   default:
@@ -173,22 +183,23 @@ bool vm_run() {
   printf("\n");
 #endif
 
-  for (Instr instr = (Instr)vm.program[vm.ip]; instr != INSTR_DONE;
-       instr = (Instr)vm.program[vm.ip]) {
-    static_assert(INSTR_COUNT == 13, "Update Instr is required");
+  for (Instr instr = (Instr)vm.program[vm.ip].word; instr != INSTR_DONE;
+       instr = (Instr)vm.program[vm.ip].word) {
+    static_assert(INSTR_COUNT == 14, "Update Instr is required");
     switch (instr) {
-    case INSTR_INT: {
+    case INSTR_INT:
+    case INSTR_FLOAT: {
       assert(vm.sp < STACK_CAPACITY);
       assert(vm.ip + 1 < STACK_CAPACITY);
-      int value = vm.program[++vm.ip];
-      vm.stack[vm.sp++] = (Value){.type = VAL_INT, .integer = value};
+      word_t word = vm.program[++vm.ip].word;
+      vm.stack[vm.sp++] = (Value){.type = instr == INSTR_INT ? VAL_INT : VAL_FLOAT, .word = word};
       vm.ip += 1;
     } break;
 
     case INSTR_STRING: {
       assert(vm.sp < STACK_CAPACITY);
       assert(vm.ip + 1 < STACK_CAPACITY);
-      int offset = (int)vm.program[++vm.ip];
+      int offset = vm.program[++vm.ip].integer;
       vm.stack[vm.sp++] = (Value){.type = VAL_STR, .cstr = vm.data + offset};
       vm.ip += 1;
     } break;
@@ -350,9 +361,13 @@ bool tokenize(const char *source) {
     if (isdigit(*ptr) || (*ptr == '-' && isdigit(ptr[1]))) {
       const char *end = ptr;
       end += *end == '-';
-      while (*end && isdigit(*end))
+      bool is_float = false;
+      while (*end && (isdigit(*end) || *end == '.')) {
+        if (*end == '.')
+          is_float = true;
         ++end;
-      Token token = {(Location){0}, ptr, end - ptr, TOK_INT};
+      }
+      Token token = {(Location){0}, ptr, end - ptr, is_float ? TOK_FLOAT : TOK_INT};
       make_token(&token);
       ptr = end;
     } else if (*ptr == '"') {
@@ -433,10 +448,13 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 13, "Update TokenType is required");
+  static_assert(TOK_COUNT == 14, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->len, token->data);
+    break;
+  case TOK_FLOAT:
+    printf("float %.*s\n", token->len, token->data);
     break;
   case TOK_STR:
     printf("str %.*s\n", token->len, token->data);
@@ -462,13 +480,16 @@ void token_print(const Token *token) {
 }
 
 void value_print(Value value) {
-  static_assert(VAL_COUNT == 2, "Update ValueType is required");
+  static_assert(VAL_COUNT == 3, "Update ValueType is required");
   switch (value.type) {
   case VAL_INT:
     printf("%d\n", value.integer);
     break;
   case VAL_STR:
     printf("%s\n", value.cstr);
+    break;
+  case VAL_FLOAT:
+    printf("%g\n", value.float_);
     break;
   default:
     assert(0 && "unreachable");
@@ -490,19 +511,29 @@ void vm_dump(void) {
   printf("program:\n");
   Instr instr;
   for (int ip = 0; ip < STACK_CAPACITY;) {
-    instr = vm.program[ip];
+    instr = vm.program[ip].word;
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 13, "Update Instr is required");
+    static_assert(INSTR_COUNT == 14, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
-      int value = vm.program[++ip];
+      int value = vm.program[++ip].integer;
       printf("int(%d) ", value);
       ip += 1;
     } break;
+    case INSTR_FLOAT: {
+      assert(ip + 1 < STACK_CAPACITY);
+      float value = vm.program[++ip].float_;
+      printf("float(%g) ", value);
+      ip += 1;
+    } break;
     case INSTR_STRING:
+      assert(ip + 1 < STACK_CAPACITY);
+      Word word = vm.program[++ip];
+      printf("\"%s\"", (char *)word.cstr);
+      ip += 1;
       break;
     case INSTR_ADD:
       printf("+ ");
@@ -563,9 +594,10 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 13, "Update Instr is required");
+  static_assert(INSTR_COUNT == 14, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:    return "INSTR_INT";
+  case INSTR_FLOAT:  return "INSTR_FLOAT";
   case INSTR_STRING: return "INSTR_STRING";
   case INSTR_ADD:    return "INSTR_ADD";
   case INSTR_SUB:    return "INSTR_SUB";
@@ -575,7 +607,7 @@ const char *instr_to_cstr(Instr instr) {
   case INSTR_OVER:   return "INSTR_OVER";
   case INSTR_SWAP:   return "INSTR_SWAP";
   case INSTR_DROP:   return "INSTR_DROP";
-  case INSTR_ROT:   return "INSTR_ROT";
+  case INSTR_ROT:    return "INSTR_ROT";
   case INSTR_DUMP:   return "INSTR_DUMP";
   case INSTR_DONE:   return "INSTR_DONE";
   case INSTR_COUNT:  return "INSTR_COUNT";
@@ -588,32 +620,39 @@ const char *instr_to_cstr(Instr instr) {
 void compile(void) {
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 13, "Update TokenType is required");
+    static_assert(TOK_COUNT == 14, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
       int i = atoi(t->data);
-      vm_push_instr(INSTR_INT, i);
+      vm_push_instr(INSTR_INT, (Word){.integer=i});
     } break;
+
+    case TOK_FLOAT: {
+      float f = strtof(t->data, NULL);
+      vm_push_instr(INSTR_FLOAT, (Word){.float_=f});
+    } break;
+
     case TOK_STR: {
       String string = {(char *)t->data, t->len};
-      vm_push_instr(INSTR_STRING, (Word)(&string));
+      vm_push_instr(INSTR_STRING, (Word){.word=(word_t)&string});
     } break;
-    case TOK_PLUS:  vm_push_instr(INSTR_ADD, 0); break;
-    case TOK_MINUS: vm_push_instr(INSTR_SUB, 0); break;
-    case TOK_STAR:  vm_push_instr(INSTR_MUL, 0); break;
-    case TOK_SLASH: vm_push_instr(INSTR_DIV, 0); break;
-    case TOK_DUP:   vm_push_instr(INSTR_DUP, 0); break;
-    case TOK_DOT:   vm_push_instr(INSTR_DUMP, 0); break;
-    case TOK_OVER:  vm_push_instr(INSTR_OVER, 0); break;
-    case TOK_SWAP:  vm_push_instr(INSTR_SWAP, 0); break;
-    case TOK_DROP:  vm_push_instr(INSTR_DROP, 0); break;
-    case TOK_ROT:   vm_push_instr(INSTR_ROT, 0); break;
+
+    case TOK_PLUS:  vm_push_instr(INSTR_ADD, word0); break;
+    case TOK_MINUS: vm_push_instr(INSTR_SUB, word0); break;
+    case TOK_STAR:  vm_push_instr(INSTR_MUL, word0); break;
+    case TOK_SLASH: vm_push_instr(INSTR_DIV, word0); break;
+    case TOK_DUP:   vm_push_instr(INSTR_DUP, word0); break;
+    case TOK_DOT:   vm_push_instr(INSTR_DUMP, word0); break;
+    case TOK_OVER:  vm_push_instr(INSTR_OVER, word0); break;
+    case TOK_SWAP:  vm_push_instr(INSTR_SWAP, word0); break;
+    case TOK_DROP:  vm_push_instr(INSTR_DROP, word0); break;
+    case TOK_ROT:   vm_push_instr(INSTR_ROT, word0); break;
     default:
       assert(0 && "unreachable");
     }
     // clang-format off
   }
-  vm_push_instr(INSTR_DONE, 0);
+  vm_push_instr(INSTR_DONE, word0);
 }
 
 int get_file_size(const char *filename) {
