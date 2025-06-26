@@ -38,6 +38,10 @@ typedef enum {
   TOK_STAR,
   TOK_SLASH,
   TOK_MOD,
+  TOK_PLUS_DOT,
+  TOK_MINUS_DOT,
+  TOK_STAR_DOT,
+  TOK_SLASH_DOT,
   TOK_DUP,
   TOK_OVER,
   TOK_SWAP,
@@ -93,6 +97,10 @@ typedef enum {
   INSTR_MUL,
   INSTR_DIV,
   INSTR_MOD,
+  INSTR_ADDF,
+  INSTR_SUBF,
+  INSTR_MULF,
+  INSTR_DIVF,
   INSTR_DUP,
   INSTR_OVER,
   INSTR_SWAP,
@@ -139,7 +147,7 @@ bool read_entire_file(const char *filename, Arena *arena);
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 15, "Update Instr is required");
+  static_assert(INSTR_COUNT == 19, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
   case INSTR_FLOAT:
@@ -163,6 +171,10 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_MUL:
   case INSTR_DIV:
   case INSTR_MOD:
+  case INSTR_ADDF:
+  case INSTR_SUBF:
+  case INSTR_MULF:
+  case INSTR_DIVF:
   case INSTR_DUMP:
   case INSTR_DUP:
   case INSTR_OVER:
@@ -188,7 +200,7 @@ bool vm_run() {
 
   for (Instr instr = (Instr)vm.program[vm.ip].word; instr != INSTR_DONE;
        instr = (Instr)vm.program[vm.ip].word) {
-    static_assert(INSTR_COUNT == 15, "Update Instr is required");
+    static_assert(INSTR_COUNT == 19, "Update Instr is required");
     switch (instr) {
     case INSTR_INT:
     case INSTR_FLOAT: {
@@ -231,6 +243,30 @@ bool vm_run() {
       } else {
         vm.stack[vm.sp++] =
             (Value){.type = VAL_INT, .integer = a.integer % b.integer};
+      }
+      vm.ip += 1;
+    } break;
+
+    case INSTR_ADDF:
+    case INSTR_SUBF:
+    case INSTR_MULF:
+    case INSTR_DIVF: {
+      assert(vm.sp >= 2);
+      Value b = vm.stack[--vm.sp];
+      Value a = vm.stack[--vm.sp];
+      assert(a.type == VAL_FLOAT && b.type == VAL_FLOAT);
+      if (instr == INSTR_ADDF) {
+        vm.stack[vm.sp++] =
+            (Value){.type = VAL_FLOAT, .float_ = a.float_ + b.float_};
+      } else if (instr == INSTR_SUBF) {
+        vm.stack[vm.sp++] =
+            (Value){.type = VAL_FLOAT, .float_ = a.float_ - b.float_};
+      } else if (instr == INSTR_MULF) {
+        vm.stack[vm.sp++] =
+            (Value){.type = VAL_FLOAT, .float_ = a.float_ * b.float_};
+      } else {
+        vm.stack[vm.sp++] =
+            (Value){.type = VAL_FLOAT, .float_ = a.float_ / b.float_};
       }
       vm.ip += 1;
     } break;
@@ -405,23 +441,31 @@ bool tokenize(const char *source) {
       make_token(&token);
       ptr += 3;
     } else if (*ptr == '*') {
-      Token token = {(Location){0}, ptr, 1, TOK_STAR};
+      bool is_next_dot = ptr[1] == '.';
+      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_STAR_DOT}
+                                : (Token){(Location){0}, ptr, 1, TOK_STAR};
       make_token(&token);
-      ptr += 1;
+      ptr += (1 + is_next_dot);
     } else if (*ptr == '+') {
-      Token token = {(Location){0}, ptr, 1, TOK_PLUS};
+      bool is_next_dot = ptr[1] == '.';
+      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_PLUS_DOT}
+                                : (Token){(Location){0}, ptr, 1, TOK_PLUS};
       make_token(&token);
-      ptr += 1;
+      ptr += (1 + is_next_dot);
     } else if (*ptr == '/') {
-      Token token = {(Location){0}, ptr, 1, TOK_SLASH};
+      bool is_next_dot = ptr[1] == '.';
+      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_SLASH_DOT}
+                                : (Token){(Location){0}, ptr, 1, TOK_SLASH};
       make_token(&token);
-      ptr += 1;
+      ptr += (1 + is_next_dot);
+    } else if (*ptr == '-') {
+      bool is_next_dot = ptr[1] == '.';
+      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_MINUS_DOT}
+                                : (Token){(Location){0}, ptr, 1, TOK_MINUS};
+      make_token(&token);
+      ptr += (1 + is_next_dot);
     } else if (*ptr == '%') {
       Token token = {(Location){0}, ptr, 1, TOK_MOD};
-      make_token(&token);
-      ptr += 1;
-    } else if (*ptr == '-') {
-      Token token = {(Location){0}, ptr, 1, TOK_MINUS};
       make_token(&token);
       ptr += 1;
     } else if (*ptr == '.') {
@@ -459,7 +503,7 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 15, "Update TokenType is required");
+  static_assert(TOK_COUNT == 19, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->len, token->data);
@@ -474,6 +518,10 @@ void token_print(const Token *token) {
   case TOK_MINUS:
   case TOK_STAR:
   case TOK_SLASH:
+  case TOK_PLUS_DOT:
+  case TOK_MINUS_DOT:
+  case TOK_STAR_DOT:
+  case TOK_SLASH_DOT:
   case TOK_MOD:
   case TOK_DOT:
   case TOK_DUP:
@@ -527,7 +575,7 @@ void vm_dump(void) {
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 15, "Update Instr is required");
+    static_assert(INSTR_COUNT == 19, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
@@ -563,6 +611,23 @@ void vm_dump(void) {
       printf("/ ");
       ip += 1;
       break;
+    case INSTR_ADDF:
+      printf("+. ");
+      ip += 1;
+      break;
+    case INSTR_SUBF:
+      printf("-. ");
+      ip += 1;
+      break;
+    case INSTR_MULF:
+      printf("*. ");
+      ip += 1;
+      break;
+    case INSTR_DIVF:
+      printf("/. ");
+      ip += 1;
+      break;
+
     case INSTR_MOD:
       printf("%% ");
       ip += 1;
@@ -610,7 +675,7 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 15, "Update Instr is required");
+  static_assert(INSTR_COUNT == 19, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:    return "INSTR_INT";
   case INSTR_FLOAT:  return "INSTR_FLOAT";
@@ -620,6 +685,10 @@ const char *instr_to_cstr(Instr instr) {
   case INSTR_MUL:    return "INSTR_MUL";
   case INSTR_DIV:    return "INSTR_DIV";
   case INSTR_MOD:    return "INSTR_MOD";
+  case INSTR_ADDF:   return "INSTR_ADDF";
+  case INSTR_SUBF:   return "INSTR_SUBF";
+  case INSTR_MULF:   return "INSTR_MULF";
+  case INSTR_DIVF:   return "INSTR_DIVF";
   case INSTR_DUP:    return "INSTR_DUP";
   case INSTR_OVER:   return "INSTR_OVER";
   case INSTR_SWAP:   return "INSTR_SWAP";
@@ -637,7 +706,7 @@ const char *instr_to_cstr(Instr instr) {
 void compile(void) {
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 15, "Update TokenType is required");
+    static_assert(TOK_COUNT == 19, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
       int i = atoi(t->data);
@@ -659,6 +728,10 @@ void compile(void) {
     case TOK_STAR:  vm_push_instr(INSTR_MUL, word0); break;
     case TOK_SLASH: vm_push_instr(INSTR_DIV, word0); break;
     case TOK_MOD:   vm_push_instr(INSTR_MOD, word0); break;
+    case TOK_PLUS_DOT:  vm_push_instr(INSTR_ADDF, word0); break;
+    case TOK_MINUS_DOT: vm_push_instr(INSTR_SUBF, word0); break;
+    case TOK_STAR_DOT:  vm_push_instr(INSTR_MULF, word0); break;
+    case TOK_SLASH_DOT: vm_push_instr(INSTR_DIVF, word0); break;
     case TOK_DUP:   vm_push_instr(INSTR_DUP, word0); break;
     case TOK_DOT:   vm_push_instr(INSTR_DUMP, word0); break;
     case TOK_OVER:  vm_push_instr(INSTR_OVER, word0); break;
