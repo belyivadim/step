@@ -29,6 +29,7 @@ typedef enum {
   TOK_OVER,
   TOK_SWAP,
   TOK_DROP,
+  TOK_ROT,
   TOK_DOT,
   TOK_COUNT
 } TokenType;
@@ -85,6 +86,7 @@ typedef enum {
   INSTR_OVER,
   INSTR_SWAP,
   INSTR_DROP,
+  INSTR_ROT,
   INSTR_DUMP,
   INSTR_DONE,
   INSTR_COUNT,
@@ -126,7 +128,7 @@ bool read_entire_file(const char *filename, Arena *arena);
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 12, "Update Instr is required");
+  static_assert(INSTR_COUNT == 13, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
     assert(vm.ip + 1 < STACK_CAPACITY);
@@ -153,6 +155,7 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_OVER:
   case INSTR_SWAP:
   case INSTR_DROP:
+  case INSTR_ROT:
   case INSTR_DONE:
     vm.program[vm.ip++] = (Word)instr;
     break;
@@ -172,7 +175,7 @@ bool vm_run() {
 
   for (Instr instr = (Instr)vm.program[vm.ip]; instr != INSTR_DONE;
        instr = (Instr)vm.program[vm.ip]) {
-    static_assert(INSTR_COUNT == 12, "Update Instr is required");
+    static_assert(INSTR_COUNT == 13, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(vm.sp < STACK_CAPACITY);
@@ -239,6 +242,15 @@ bool vm_run() {
     case INSTR_DROP: {
       assert(vm.sp >= 1);
       vm.sp -= 1;
+      vm.ip += 1;
+    } break;
+
+    case INSTR_ROT: {
+      assert(vm.sp >= 3);
+      Value tmp = vm.stack[vm.sp - 3];
+      vm.stack[vm.sp - 3] = vm.stack[vm.sp - 2];
+      vm.stack[vm.sp - 2] = vm.stack[vm.sp - 1];
+      vm.stack[vm.sp - 1] = tmp;
       vm.ip += 1;
     } break;
 
@@ -366,6 +378,10 @@ bool tokenize(const char *source) {
       Token token = {(Location){0}, ptr, 4, TOK_DROP};
       make_token(&token);
       ptr += 4;
+    } else if (strncmp(ptr, "rot", 3) == 0) {
+      Token token = {(Location){0}, ptr, 3, TOK_ROT};
+      make_token(&token);
+      ptr += 3;
     } else if (*ptr == '*') {
       Token token = {(Location){0}, ptr, 1, TOK_STAR};
       make_token(&token);
@@ -417,7 +433,7 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 12, "Update TokenType is required");
+  static_assert(TOK_COUNT == 13, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->len, token->data);
@@ -434,6 +450,7 @@ void token_print(const Token *token) {
   case TOK_OVER:
   case TOK_SWAP:
   case TOK_DROP:
+  case TOK_ROT:
     printf("%.*s\n", token->len, token->data);
     break;
   case TOK_EOF:
@@ -477,7 +494,7 @@ void vm_dump(void) {
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 12, "Update Instr is required");
+    static_assert(INSTR_COUNT == 13, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
@@ -519,6 +536,10 @@ void vm_dump(void) {
       printf("drop ");
       ip += 1;
       break;
+    case INSTR_ROT:
+      printf("rot ");
+      ip += 1;
+      break;
     case INSTR_DUMP:
       printf(". ");
       ip += 1;
@@ -542,7 +563,7 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 12, "Update Instr is required");
+  static_assert(INSTR_COUNT == 13, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:    return "INSTR_INT";
   case INSTR_STRING: return "INSTR_STRING";
@@ -554,6 +575,7 @@ const char *instr_to_cstr(Instr instr) {
   case INSTR_OVER:   return "INSTR_OVER";
   case INSTR_SWAP:   return "INSTR_SWAP";
   case INSTR_DROP:   return "INSTR_DROP";
+  case INSTR_ROT:   return "INSTR_ROT";
   case INSTR_DUMP:   return "INSTR_DUMP";
   case INSTR_DONE:   return "INSTR_DONE";
   case INSTR_COUNT:  return "INSTR_COUNT";
@@ -566,7 +588,7 @@ const char *instr_to_cstr(Instr instr) {
 void compile(void) {
   for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 12, "Update TokenType is required");
+    static_assert(TOK_COUNT == 13, "Update TokenType is required");
     switch (t->type) {
     case TOK_INT: {
       int i = atoi(t->data);
@@ -582,9 +604,10 @@ void compile(void) {
     case TOK_SLASH: vm_push_instr(INSTR_DIV, 0); break;
     case TOK_DUP:   vm_push_instr(INSTR_DUP, 0); break;
     case TOK_DOT:   vm_push_instr(INSTR_DUMP, 0); break;
-    case TOK_OVER:   vm_push_instr(INSTR_OVER, 0); break;
-    case TOK_SWAP:   vm_push_instr(INSTR_SWAP, 0); break;
-    case TOK_DROP:   vm_push_instr(INSTR_DROP, 0); break;
+    case TOK_OVER:  vm_push_instr(INSTR_OVER, 0); break;
+    case TOK_SWAP:  vm_push_instr(INSTR_SWAP, 0); break;
+    case TOK_DROP:  vm_push_instr(INSTR_DROP, 0); break;
+    case TOK_ROT:   vm_push_instr(INSTR_ROT, 0); break;
     default:
       assert(0 && "unreachable");
     }
