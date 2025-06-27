@@ -29,10 +29,8 @@ typedef enum { VAL_INT = 0,
                VAL_COUNT } ValueType;
 
 typedef enum {
+  // keywords
   TOK_EOF = 0,
-  TOK_INT,
-  TOK_FLOAT,
-  TOK_STR,
   TOK_PLUS,
   TOK_MINUS,
   TOK_STAR,
@@ -54,22 +52,21 @@ typedef enum {
   TOK_DROP,
   TOK_ROT,
   TOK_DOT,
+
+  TOK_KW_COUNT,
+
+  // literals
+  TOK_INT,
+  TOK_FLOAT,
+  TOK_STR,
+
   TOK_COUNT
 } TokenType;
 
 typedef struct {
-  const char *filepath;
-  int row, col;
+  const char *filename;
+  int line, col;
 } Location;
-
-typedef struct {
-  Location Location;
-
-  const char *data;
-  int len;
-
-  TokenType type;
-} Token;
 
 typedef struct {
   char *data;
@@ -80,6 +77,12 @@ typedef struct {
   const char *data;
   int len;
 } SV;
+
+typedef struct {
+  Location Location;
+  SV source;
+  TokenType type;
+} Token;
 
 typedef struct {
   ValueType type;
@@ -156,25 +159,63 @@ void value_print(Value value);
 void vm_dump(void);
 void vm_dump_stack(void);
 const char *instr_to_cstr(Instr instr);
+bool tokenize(const char *source, const char *filename);
 void compile(void);
 int get_file_size(const char *filename);
 bool read_entire_file(const char *filename, Arena *arena);
 bool sv_eq(SV lhs, SV rhs);
+bool sv_contains(SV sv, SV substr);
 SV sv_strip(SV sv);
 SV sv_stripr(SV sv);
 SV sv_stripl(SV sv);
-SV sv_chop(SV sv, SV delim);
+SV sv_chop(SV *sv, SV delim);
 
+// default constuctor takes cstr
 #define sv(cstr) \
   (SV) { (cstr), strlen((cstr)) }
+
+// constuctor from literal
 #define svl(literal) \
   (SV){(literal), sizeof((literal)) - 1}
+
+// constuctor-initializer from literal
+#define svli(literal) \
+  {(literal), sizeof((literal)) - 1}
+
+// constuctor from String
 #define svs(string) \
   (SV) { (string).data, (string).len }
+
 #define sv_advance(sv) (++(sv).data, --(sv).len)
 #define sv_slice(sv, offset, len) \
   (SV) { (sv).data + (offset), (len) }
 #define svf(sv) (sv).len, (sv).data
+
+static_assert(TOK_KW_COUNT == 22, "Update TokenType is required");
+SV keywords[TOK_KW_COUNT] = {
+    [TOK_EOF] = svli("\0"),
+    [TOK_PLUS] = svli("+"),
+    [TOK_MINUS] = svli("-"),
+    [TOK_STAR] = svli("*"),
+    [TOK_SLASH] = svli("/"),
+    [TOK_MOD] = svli("%"),
+    [TOK_PLUS_DOT] = svli("+."),
+    [TOK_MINUS_DOT] = svli("-."),
+    [TOK_STAR_DOT] = svli("*."),
+    [TOK_SLASH_DOT] = svli("/."),
+    [TOK_EQ] = svli("="),
+    [TOK_NEQ] = svli("!="),
+    [TOK_LT] = svli("<"),
+    [TOK_LE] = svli("<="),
+    [TOK_GT] = svli(">"),
+    [TOK_GE] = svli(">="),
+    [TOK_DUP] = svli("dup"),
+    [TOK_OVER] = svli("over"),
+    [TOK_SWAP] = svli("swap"),
+    [TOK_DROP] = svli("drop"),
+    [TOK_ROT] = svli("rot"),
+    [TOK_DOT] = svli("."),
+};
 
 // === DEFINITIONS ===
 void vm_push_instr(Instr instr, Word arg) {
@@ -192,7 +233,7 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_STRING: {
     assert(vm.ip + 1 < STACK_CAPACITY);
     vm.program[vm.ip++] = (Word){.word = instr};
-    String string = *(String *)arg.word;
+    SV string = *(SV *)arg.word;
     memcpy(vm.data + vm.data_offset, string.data, string.len);
     vm.program[vm.ip++] = (Word){.integer = vm.data_offset};
     vm.data_offset += string.len;
@@ -474,120 +515,82 @@ Token *make_token(const Token *source) {
   return token;
 }
 
-bool tokenize(const char *source) {
+bool tokenize(const char *source, const char *filename) {
   if (NULL == source)
     return true;
 
-  const char *ptr = source;
-
-  while (*ptr) {
-    while (*ptr && isspace(*ptr)) {
-      // if (*ptr == '\n') column += 1;
-      ++ptr;
+  Location loc = {.filename = filename, .col = 1, .line = 0};
+  Location prev_loc = loc;
+  int last_token_len = 0;
+  SV sv = sv(source);
+  while (true) {
+    SV line = sv_chop(&sv, svl("\n"));
+    if (line.len <= 0) {
+      if (loc.line == prev_loc.line)
+        loc.col += last_token_len;
+      make_token(&(Token){loc, sv, TOK_EOF});
+      printf("%d:%d: ", loc.line, loc.col);
+      token_print(&(Token){loc, sv, TOK_EOF});
+      return true;
     }
 
-    if (!*ptr)
-      break;
+    const char *line_start = line.data;
+    loc.line += 1;
+    loc.col = 1;
 
-    if (isdigit(*ptr) || (*ptr == '-' && isdigit(ptr[1]))) {
-      const char *end = ptr;
-      end += *end == '-';
-      bool is_float = false;
-      while (*end && (isdigit(*end) || *end == '.')) {
-        if (*end == '.')
-          is_float = true;
-        ++end;
+    while (line.len > 0) {
+      line = sv_strip(line);
+      if (line.len <= 0)
+        break;
+
+      SV token_text;
+      TokenType type = TOK_COUNT;
+      if (*line.data == '"') {
+        // string
+        int i = 1;
+        while (i < line.len && line.data[i] != '"')
+          i += 1;
+        if (line.data[i] != '"')
+          return false; // TODO: parse error
+        token_text = sv_slice(line, 1, i - 1);
+        line = sv_slice(line, i + 1, line.len - i - 1);
+        loc.col = token_text.data - line_start;
+        type = TOK_STR;
+      } else {
+        token_text = sv_strip(sv_chop(&line, svl(" ")));
+        loc.col = token_text.data - line_start + 1;
+
+        if ((token_text.len > 0 && isdigit(token_text.data[0])) || (token_text.len > 1 && token_text.data[0] == '-' && isdigit(token_text.data[1]))) {
+          type = TOK_INT;
+          SV tmp = token_text;
+          while (tmp.len > 0) {
+            sv_chop(&tmp, svl("."));
+            if (tmp.data[-1] == '.') {
+              if (type != TOK_FLOAT)
+                type = TOK_FLOAT;
+              else
+                return false; // TODO: parse error
+            } else
+              break;
+          }
+        } else {
+          // keyword
+          for (int i = 0; i < TOK_KW_COUNT; ++i) {
+            if (sv_eq(token_text, keywords[i])) {
+              type = (TokenType)i;
+              break;
+            }
+          }
+          assert(TOK_COUNT != type);
+        }
       }
-      Token token = {(Location){0}, ptr, end - ptr, is_float ? TOK_FLOAT : TOK_INT};
-      make_token(&token);
-      ptr = end;
-    } else if (*ptr == '"') {
-      const char *end = ptr + 1;
-      while (*end && *end != '"')
-        ++end;
-      Token token = {(Location){0}, ptr + 1, end - ptr - 1, TOK_STR};
-      make_token(&token);
-      ptr = end + 1;
-    } else if (strncmp(ptr, "dup", 3) == 0) {
-      Token token = {(Location){0}, ptr, 3, TOK_DUP};
-      make_token(&token);
-      ptr += 3;
-    } else if (strncmp(ptr, "over", 4) == 0) {
-      Token token = {(Location){0}, ptr, 4, TOK_OVER};
-      make_token(&token);
-      ptr += 4;
-    } else if (strncmp(ptr, "swap", 4) == 0) {
-      Token token = {(Location){0}, ptr, 4, TOK_SWAP};
-      make_token(&token);
-      ptr += 4;
-    } else if (strncmp(ptr, "drop", 4) == 0) {
-      Token token = {(Location){0}, ptr, 4, TOK_DROP};
-      make_token(&token);
-      ptr += 4;
-    } else if (strncmp(ptr, "rot", 3) == 0) {
-      Token token = {(Location){0}, ptr, 3, TOK_ROT};
-      make_token(&token);
-      ptr += 3;
-    } else if (*ptr == '*') {
-      bool is_next_dot = ptr[1] == '.';
-      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_STAR_DOT}
-                                : (Token){(Location){0}, ptr, 1, TOK_STAR};
-      make_token(&token);
-      ptr += (1 + is_next_dot);
-    } else if (*ptr == '+') {
-      bool is_next_dot = ptr[1] == '.';
-      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_PLUS_DOT}
-                                : (Token){(Location){0}, ptr, 1, TOK_PLUS};
-      make_token(&token);
-      ptr += (1 + is_next_dot);
-    } else if (*ptr == '/') {
-      bool is_next_dot = ptr[1] == '.';
-      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_SLASH_DOT}
-                                : (Token){(Location){0}, ptr, 1, TOK_SLASH};
-      make_token(&token);
-      ptr += (1 + is_next_dot);
-    } else if (*ptr == '-') {
-      bool is_next_dot = ptr[1] == '.';
-      Token token = is_next_dot ? (Token){(Location){0}, ptr, 2, TOK_MINUS_DOT}
-                                : (Token){(Location){0}, ptr, 1, TOK_MINUS};
-      make_token(&token);
-      ptr += (1 + is_next_dot);
-    } else if (*ptr == '%') {
-      Token token = {(Location){0}, ptr, 1, TOK_MOD};
-      make_token(&token);
-      ptr += 1;
-    } else if (*ptr == '=') {
-      Token token = {(Location){0}, ptr, 1, TOK_EQ};
-      make_token(&token);
-      ptr += 1;
-    } else if (*ptr == '<') {
-      bool is_next_eq = ptr[1] == '=';
-      Token token = is_next_eq ? (Token){(Location){0}, ptr, 2, TOK_LE}
-                               : (Token){(Location){0}, ptr, 1, TOK_LT};
-      make_token(&token);
-      ptr += (1 + is_next_eq);
-    } else if (*ptr == '>') {
-      bool is_next_eq = ptr[1] == '=';
-      Token token = is_next_eq ? (Token){(Location){0}, ptr, 2, TOK_GE}
-                               : (Token){(Location){0}, ptr, 1, TOK_GT};
-      make_token(&token);
-      ptr += (1 + is_next_eq);
-    } else if (*ptr == '!' && ptr[1] == '=') {
-      Token token = {(Location){0}, ptr, 2, TOK_NEQ};
-      make_token(&token);
-      ptr += 2;
-    } else if (*ptr == '.') {
-      Token token = {(Location){0}, ptr, 1, TOK_DOT};
-      make_token(&token);
-      ptr += 1;
-    } else {
-      fprintf(stderr, "Unknown/unimplemented token: %s\n", ptr);
-      abort();
+      last_token_len = token_text.len;
+      prev_loc = loc;
+      make_token(&(Token){loc, token_text, type});
+      printf("%d:%d: ", loc.line, loc.col);
+      token_print(&(Token){loc, token_text, type});
     }
   }
-
-  Token token = {(Location){0}, NULL, 0, TOK_EOF};
-  make_token(&token);
 
   return true;
 }
@@ -611,16 +614,16 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 25, "Update TokenType is required");
+  static_assert(TOK_COUNT == 26, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
-    printf("int %.*s\n", token->len, token->data);
+    printf("int %.*s\n", token->source.len, token->source.data);
     break;
   case TOK_FLOAT:
-    printf("float %.*s\n", token->len, token->data);
+    printf("float %.*s\n", token->source.len, token->source.data);
     break;
   case TOK_STR:
-    printf("str %.*s\n", token->len, token->data);
+    printf("str %.*s\n", token->source.len, token->source.data);
     break;
   case TOK_PLUS:
   case TOK_MINUS:
@@ -643,7 +646,7 @@ void token_print(const Token *token) {
   case TOK_SWAP:
   case TOK_DROP:
   case TOK_ROT:
-    printf("%.*s\n", token->len, token->data);
+    printf("%.*s\n", token->source.len, token->source.data);
     break;
   case TOK_EOF:
     printf("EOF\n");
@@ -849,22 +852,22 @@ const char *instr_to_cstr(Instr instr) {
 }
 
 void compile(void) {
-  for (Token *t = next_token(); t->type != TOK_EOF; t = next_token()) {
+  for (Token *token = next_token(); token->type != TOK_EOF; token = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 25, "Update TokenType is required");
-    switch (t->type) {
+    static_assert(TOK_COUNT == 26, "Update TokenType is required");
+    switch (token->type) {
     case TOK_INT: {
-      int i = atoi(t->data);
+      int i = atoi(token->source.data);
       vm_push_instr(INSTR_INT, (Word){.integer=i});
     } break;
 
     case TOK_FLOAT: {
-      float f = strtof(t->data, NULL);
+      float f = strtof(token->source.data, NULL);
       vm_push_instr(INSTR_FLOAT, (Word){.float_=f});
     } break;
 
     case TOK_STR: {
-      String string = {(char *)t->data, t->len};
+      SV string = {(char *)token->source.data, token->source.len};
       vm_push_instr(INSTR_STRING, (Word){.word=(word_t)&string});
     } break;
 
@@ -944,7 +947,15 @@ defer:
 }
 
 bool sv_eq(SV lhs, SV rhs) {
-  return lhs.len == rhs.len && strncmp(lhs.data, rhs.data, lhs.len);
+  return lhs.len == rhs.len && strncmp(lhs.data, rhs.data, lhs.len) == 0;
+}
+
+bool sv_contains(SV sv, SV substr) {
+  for (int i = 0; sv.len - i >= substr.len; ++i) {
+    if (strncmp(sv.data + i, substr.data, substr.len) == 0)
+      return true;
+  }
+  return false;
 }
 
 SV sv_strip(SV sv) {
@@ -959,20 +970,23 @@ SV sv_stripr(SV sv) {
 }
 
 SV sv_stripl(SV sv) {
-  while (sv.len > 0 && isspace((sv.data))) {
+  while (sv.len > 0 && isspace((*sv.data))) {
     sv_advance(sv);
   }
   return sv;
 }
 
-SV sv_chop(SV sv, SV delim) {
+SV sv_chop(SV *sv, SV delim) {
   int offset = 0;
-  while (sv.len - offset >= delim.len 
-    && strncmp(sv.data + offset, delim.data, delim.len) != 0) {
+  while (sv->len - offset >= delim.len 
+    && strncmp(sv->data + offset, delim.data, delim.len) != 0) {
     offset += 1;
   }
-  offset += delim.len;
-  return sv_slice(sv, offset, sv.len - offset);
+  if (sv->len > 0) 
+    offset += delim.len;
+  SV result = sv_slice(*sv, 0, offset);
+  *sv = sv_slice(*sv, offset, sv->len - offset);
+  return result;
 }
 
 int main(int argc, char *argv[]) {
@@ -992,7 +1006,8 @@ int main(int argc, char *argv[]) {
 
   tokens_init();
 
-  tokenize(source_arena.chunk->mem);
+  if (!tokenize(source_arena.chunk->mem, source_filename))
+    return 1;
   compile();
   vm_run();
 
