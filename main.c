@@ -51,6 +51,9 @@ typedef enum {
   TOK_SWAP,
   TOK_DROP,
   TOK_ROT,
+  TOK_JMP,
+  TOK_JZ,
+  TOK_JNZ,
   TOK_DOT,
 
   TOK_KW_COUNT,
@@ -126,6 +129,9 @@ typedef enum {
   INSTR_SWAP,
   INSTR_DROP,
   INSTR_ROT,
+  INSTR_JMP,
+  INSTR_JZ,
+  INSTR_JNZ,
   INSTR_DUMP,
   INSTR_DONE,
   INSTR_COUNT,
@@ -191,7 +197,7 @@ SV sv_chop(SV *sv, SV delim);
   (SV) { (sv).data + (offset), (len) }
 #define svf(sv) (sv).len, (sv).data
 
-static_assert(TOK_KW_COUNT == 22, "Update TokenType is required");
+static_assert(TOK_KW_COUNT == 25, "Update TokenType is required");
 SV keywords[TOK_KW_COUNT] = {
     [TOK_EOF] = svli("\0"),
     [TOK_PLUS] = svli("+"),
@@ -214,6 +220,9 @@ SV keywords[TOK_KW_COUNT] = {
     [TOK_SWAP] = svli("swap"),
     [TOK_DROP] = svli("drop"),
     [TOK_ROT] = svli("rot"),
+    [TOK_JMP] = svli("jmp"),
+    [TOK_JZ] = svli("jz"),
+    [TOK_JNZ] = svli("jnz"),
     [TOK_DOT] = svli("."),
 };
 
@@ -221,7 +230,7 @@ SV keywords[TOK_KW_COUNT] = {
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 25, "Update Instr is required");
+  static_assert(INSTR_COUNT == 28, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
   case INSTR_FLOAT:
@@ -261,6 +270,9 @@ void vm_push_instr(Instr instr, Word arg) {
   case INSTR_SWAP:
   case INSTR_DROP:
   case INSTR_ROT:
+  case INSTR_JMP:
+  case INSTR_JZ:
+  case INSTR_JNZ:
   case INSTR_DONE:
     vm.program[vm.ip++] = (Word){.word = instr};
     break;
@@ -280,7 +292,7 @@ bool vm_run() {
 
   for (Instr instr = (Instr)vm.program[vm.ip].word; instr != INSTR_DONE;
        instr = (Instr)vm.program[vm.ip].word) {
-    static_assert(INSTR_COUNT == 25, "Update Instr is required");
+    static_assert(INSTR_COUNT == 28, "Update Instr is required");
     switch (instr) {
     case INSTR_INT:
     case INSTR_FLOAT: {
@@ -437,6 +449,26 @@ bool vm_run() {
       vm.ip += 1;
     } break;
 
+    case INSTR_JMP: {
+      assert(vm.sp >= 1);
+      Value addr = vm.stack[--vm.sp];
+      assert(addr.type == VAL_INT);
+      vm.ip = addr.integer;
+    } break;
+
+    case INSTR_JZ:
+    case INSTR_JNZ: {
+      assert(vm.sp >= 2);
+      Value cond = vm.stack[--vm.sp];
+      Value addr = vm.stack[--vm.sp];
+      assert(cond.type == VAL_INT);
+      assert(addr.type == VAL_INT);
+      if (cond.integer == (instr == INSTR_JNZ))
+        vm.ip = addr.integer;
+      else
+        vm.ip += 1;
+    } break;
+
     case INSTR_DUMP:
       assert(vm.sp >= 1);
       value_print(vm.stack[--vm.sp]);
@@ -529,8 +561,6 @@ bool tokenize(const char *source, const char *filename) {
       if (loc.line == prev_loc.line)
         loc.col += last_token_len;
       make_token(&(Token){loc, sv, TOK_EOF});
-      printf("%d:%d: ", loc.line, loc.col);
-      token_print(&(Token){loc, sv, TOK_EOF});
       return true;
     }
 
@@ -587,8 +617,6 @@ bool tokenize(const char *source, const char *filename) {
       last_token_len = token_text.len;
       prev_loc = loc;
       make_token(&(Token){loc, token_text, type});
-      printf("%d:%d: ", loc.line, loc.col);
-      token_print(&(Token){loc, token_text, type});
     }
   }
 
@@ -614,7 +642,7 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 26, "Update TokenType is required");
+  static_assert(TOK_COUNT == 29, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->source.len, token->source.data);
@@ -646,6 +674,9 @@ void token_print(const Token *token) {
   case TOK_SWAP:
   case TOK_DROP:
   case TOK_ROT:
+  case TOK_JMP:
+  case TOK_JZ:
+  case TOK_JNZ:
     printf("%.*s\n", token->source.len, token->source.data);
     break;
   case TOK_EOF:
@@ -692,7 +723,7 @@ void vm_dump(void) {
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 25, "Update Instr is required");
+    static_assert(INSTR_COUNT == 28, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
@@ -794,6 +825,18 @@ void vm_dump(void) {
       printf("rot ");
       ip += 1;
       break;
+    case INSTR_JMP:
+      printf("jmp ");
+      ip += 1;
+      break;
+    case INSTR_JZ:
+      printf("jz ");
+      ip += 1;
+      break;
+    case INSTR_JNZ:
+      printf("jnz ");
+      ip += 1;
+      break;
     case INSTR_DUMP:
       printf(". ");
       ip += 1;
@@ -817,7 +860,7 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 25, "Update Instr is required");
+  static_assert(INSTR_COUNT == 28, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:    return "INSTR_INT";
   case INSTR_FLOAT:  return "INSTR_FLOAT";
@@ -842,6 +885,9 @@ const char *instr_to_cstr(Instr instr) {
   case INSTR_SWAP:   return "INSTR_SWAP";
   case INSTR_DROP:   return "INSTR_DROP";
   case INSTR_ROT:    return "INSTR_ROT";
+  case INSTR_JMP:    return "INSTR_JMP";
+  case INSTR_JZ:     return "INSTR_JZ";
+  case INSTR_JNZ:    return "INSTR_JNZ";
   case INSTR_DUMP:   return "INSTR_DUMP";
   case INSTR_DONE:   return "INSTR_DONE";
   case INSTR_COUNT:  return "INSTR_COUNT";
@@ -854,7 +900,7 @@ const char *instr_to_cstr(Instr instr) {
 void compile(void) {
   for (Token *token = next_token(); token->type != TOK_EOF; token = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 26, "Update TokenType is required");
+    static_assert(TOK_COUNT == 29, "Update TokenType is required");
     switch (token->type) {
     case TOK_INT: {
       int i = atoi(token->source.data);
@@ -892,6 +938,9 @@ void compile(void) {
     case TOK_SWAP:      vm_push_instr(INSTR_SWAP, word0); break;
     case TOK_DROP:      vm_push_instr(INSTR_DROP, word0); break;
     case TOK_ROT:       vm_push_instr(INSTR_ROT, word0); break;
+    case TOK_JMP:       vm_push_instr(INSTR_JMP, word0); break;
+    case TOK_JZ:        vm_push_instr(INSTR_JZ, word0); break;
+    case TOK_JNZ:       vm_push_instr(INSTR_JNZ, word0); break;
     default:
       assert(0 && "unreachable");
     }
