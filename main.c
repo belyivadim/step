@@ -77,6 +77,11 @@ typedef struct {
 } String;
 
 typedef struct {
+  const char *data;
+  int len;
+} SV;
+
+typedef struct {
   ValueType type;
   WORD_UNION;
 } Value;
@@ -154,6 +159,22 @@ const char *instr_to_cstr(Instr instr);
 void compile(void);
 int get_file_size(const char *filename);
 bool read_entire_file(const char *filename, Arena *arena);
+bool sv_eq(SV lhs, SV rhs);
+SV sv_strip(SV sv);
+SV sv_stripr(SV sv);
+SV sv_stripl(SV sv);
+SV sv_chop(SV sv, SV delim);
+
+#define sv(cstr) \
+  (SV) { (cstr), strlen((cstr)) }
+#define svl(literal) \
+  (SV){(literal), sizeof((literal)) - 1}
+#define svs(string) \
+  (SV) { (string).data, (string).len }
+#define sv_advance(sv) (++(sv).data, --(sv).len)
+#define sv_slice(sv, offset, len) \
+  (SV) { (sv).data + (offset), (len) }
+#define svf(sv) (sv).len, (sv).data
 
 // === DEFINITIONS ===
 void vm_push_instr(Instr instr, Word arg) {
@@ -920,6 +941,38 @@ defer:
   if (f)
     fclose(f);
   return result;
+}
+
+bool sv_eq(SV lhs, SV rhs) {
+  return lhs.len == rhs.len && strncmp(lhs.data, rhs.data, lhs.len);
+}
+
+SV sv_strip(SV sv) {
+  return sv_stripl(sv_stripr(sv));
+}
+
+SV sv_stripr(SV sv) {
+  while (sv.len > 0 && isspace(sv.data[sv.len-1])) {
+    sv.len -= 1;
+  }
+  return sv;
+}
+
+SV sv_stripl(SV sv) {
+  while (sv.len > 0 && isspace((sv.data))) {
+    sv_advance(sv);
+  }
+  return sv;
+}
+
+SV sv_chop(SV sv, SV delim) {
+  int offset = 0;
+  while (sv.len - offset >= delim.len 
+    && strncmp(sv.data + offset, delim.data, delim.len) != 0) {
+    offset += 1;
+  }
+  offset += delim.len;
+  return sv_slice(sv, offset, sv.len - offset);
 }
 
 int main(int argc, char *argv[]) {
