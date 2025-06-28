@@ -6,5 +6,3 @@ Step (Stack Execution processor) is a stack-based language interpreted by StepVM
 make
 ./step <source.step>
 ```
-```
-```
