@@ -1,0 +1,4 @@
+0
+'loop
+  dup . 1 +
+  &loop over 10 < jnz
