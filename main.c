@@ -62,6 +62,8 @@ typedef enum {
   TOK_INT,
   TOK_FLOAT,
   TOK_STR,
+  TOK_LABEL,
+  TOK_LABEL_ADDR,
 
   TOK_COUNT
 } TokenType;
@@ -93,6 +95,7 @@ typedef struct {
 } Value;
 
 #define STACK_CAPACITY 256
+#define LABELS_CAPACITY 256
 
 typedef struct ArenaChunk {
   struct ArenaChunk *next;
@@ -109,6 +112,8 @@ typedef enum {
   INSTR_INT,
   INSTR_FLOAT,
   INSTR_STRING,
+  INSTR_LABEL,
+  INSTR_LABEL_ADDR,
   INSTR_ADD,
   INSTR_SUB,
   INSTR_MUL,
@@ -138,6 +143,13 @@ typedef enum {
 } Instr;
 
 typedef struct {
+  SV name;
+  int addr;
+} Label;
+
+#define LABEL_ADDR_DUMMY 0xDEADBEEFll
+
+typedef struct {
   Word program[STACK_CAPACITY];
   int ip;
 
@@ -146,6 +158,9 @@ typedef struct {
 
   char data[STACK_CAPACITY];
   int data_offset;
+
+  Label labels[LABELS_CAPACITY];
+  int labels_count;
 } VM;
 VM vm;
 
@@ -166,7 +181,7 @@ void vm_dump(void);
 void vm_dump_stack(void);
 const char *instr_to_cstr(Instr instr);
 bool tokenize(const char *source, const char *filename);
-void compile(void);
+bool compile(void);
 int get_file_size(const char *filename);
 bool read_entire_file(const char *filename, Arena *arena);
 bool sv_eq(SV lhs, SV rhs);
@@ -191,6 +206,9 @@ SV sv_chop(SV *sv, SV delim);
 // constuctor from String
 #define svs(string) \
   (SV) { (string).data, (string).len }
+
+// constuctor from sv, advances input sv
+#define sva(sv) (SV){(sv).data + 1, (sv).len - 1}
 
 #define sv_advance(sv) (++(sv).data, --(sv).len)
 #define sv_slice(sv, offset, len) \
@@ -230,7 +248,7 @@ SV keywords[TOK_KW_COUNT] = {
 void vm_push_instr(Instr instr, Word arg) {
   assert(vm.ip < STACK_CAPACITY);
 
-  static_assert(INSTR_COUNT == 28, "Update Instr is required");
+  static_assert(INSTR_COUNT == 30, "Update Instr is required");
   switch (instr) {
   case INSTR_INT:
   case INSTR_FLOAT:
@@ -248,6 +266,16 @@ void vm_push_instr(Instr instr, Word arg) {
     vm.data_offset += string.len;
     vm.data[vm.data_offset++] = '\0';
   } break;
+
+  case INSTR_LABEL:
+    assert(vm.labels_count < LABELS_CAPACITY);
+    vm.labels[vm.labels_count++] = (Label){*(SV *)arg.word, vm.ip};
+    break;
+
+  case INSTR_LABEL_ADDR:
+    vm.program[vm.ip++] = (Word){.word = instr};
+    vm.program[vm.ip++].word = (word_t)LABEL_ADDR_DUMMY;
+    break;
 
   case INSTR_ADD:
   case INSTR_SUB:
@@ -292,7 +320,7 @@ bool vm_run() {
 
   for (Instr instr = (Instr)vm.program[vm.ip].word; instr != INSTR_DONE;
        instr = (Instr)vm.program[vm.ip].word) {
-    static_assert(INSTR_COUNT == 28, "Update Instr is required");
+    static_assert(INSTR_COUNT == 30, "Update Instr is required");
     switch (instr) {
     case INSTR_INT:
     case INSTR_FLOAT: {
@@ -300,6 +328,14 @@ bool vm_run() {
       assert(vm.ip + 1 < STACK_CAPACITY);
       word_t word = vm.program[++vm.ip].word;
       vm.stack[vm.sp++] = (Value){.type = instr == INSTR_INT ? VAL_INT : VAL_FLOAT, .word = word};
+      vm.ip += 1;
+    } break;
+
+    case INSTR_LABEL_ADDR: {
+      assert(vm.sp < STACK_CAPACITY);
+      assert(vm.ip + 1 < STACK_CAPACITY);
+      int addr = vm.program[++vm.ip].integer;
+      vm.stack[vm.sp++] = (Value){.type = VAL_INT, .integer = addr};
       vm.ip += 1;
     } break;
 
@@ -603,6 +639,10 @@ bool tokenize(const char *source, const char *filename) {
             } else
               break;
           }
+        } else if (token_text.len > 0 && token_text.data[0] == '\'') {
+          type = TOK_LABEL;
+        } else if (token_text.len > 0 && token_text.data[0] == '&') {
+          type = TOK_LABEL_ADDR;
         } else {
           // keyword
           for (int i = 0; i < TOK_KW_COUNT; ++i) {
@@ -642,7 +682,7 @@ Token *next_token(void) {
 }
 
 void token_print(const Token *token) {
-  static_assert(TOK_COUNT == 29, "Update TokenType is required");
+  static_assert(TOK_COUNT == 31, "Update TokenType is required");
   switch (token->type) {
   case TOK_INT:
     printf("int %.*s\n", token->source.len, token->source.data);
@@ -677,6 +717,8 @@ void token_print(const Token *token) {
   case TOK_JMP:
   case TOK_JZ:
   case TOK_JNZ:
+  case TOK_LABEL:
+  case TOK_LABEL_ADDR:
     printf("%.*s\n", token->source.len, token->source.data);
     break;
   case TOK_EOF:
@@ -723,7 +765,7 @@ void vm_dump(void) {
     if (instr == INSTR_DONE)
       break;
 
-    static_assert(INSTR_COUNT == 28, "Update Instr is required");
+    static_assert(INSTR_COUNT == 30, "Update Instr is required");
     switch (instr) {
     case INSTR_INT: {
       assert(ip + 1 < STACK_CAPACITY);
@@ -860,47 +902,60 @@ void vm_dump(void) {
 
 const char *instr_to_cstr(Instr instr) {
   // clang-format off
-  static_assert(INSTR_COUNT == 28, "Update Instr is required");
+  static_assert(INSTR_COUNT == 30, "Update Instr is required");
   switch (instr) {
-  case INSTR_INT:    return "INSTR_INT";
-  case INSTR_FLOAT:  return "INSTR_FLOAT";
-  case INSTR_STRING: return "INSTR_STRING";
-  case INSTR_ADD:    return "INSTR_ADD";
-  case INSTR_SUB:    return "INSTR_SUB";
-  case INSTR_MUL:    return "INSTR_MUL";
-  case INSTR_DIV:    return "INSTR_DIV";
-  case INSTR_MOD:    return "INSTR_MOD";
-  case INSTR_ADDF:   return "INSTR_ADDF";
-  case INSTR_SUBF:   return "INSTR_SUBF";
-  case INSTR_MULF:   return "INSTR_MULF";
-  case INSTR_DIVF:   return "INSTR_DIVF";
-  case INSTR_EQ:     return "INSTR_EQ";
-  case INSTR_NEQ:    return "INSTR_NEQ";
-  case INSTR_LT:     return "INSTR_LT";
-  case INSTR_LE:     return "INSTR_LE";
-  case INSTR_GT:     return "INSTR_GT";
-  case INSTR_GE:     return "INSTR_GE";
-  case INSTR_DUP:    return "INSTR_DUP";
-  case INSTR_OVER:   return "INSTR_OVER";
-  case INSTR_SWAP:   return "INSTR_SWAP";
-  case INSTR_DROP:   return "INSTR_DROP";
-  case INSTR_ROT:    return "INSTR_ROT";
-  case INSTR_JMP:    return "INSTR_JMP";
-  case INSTR_JZ:     return "INSTR_JZ";
-  case INSTR_JNZ:    return "INSTR_JNZ";
-  case INSTR_DUMP:   return "INSTR_DUMP";
-  case INSTR_DONE:   return "INSTR_DONE";
-  case INSTR_COUNT:  return "INSTR_COUNT";
-  default:
-      assert(0 && "unreachable");
+  case INSTR_INT:        return "INSTR_INT";
+  case INSTR_FLOAT:      return "INSTR_FLOAT";
+  case INSTR_STRING:     return "INSTR_STRING";
+  case INSTR_LABEL:      return "INSTR_LABEL";
+  case INSTR_LABEL_ADDR: return "INSTR_LABEL_ADDR";
+  case INSTR_ADD:        return "INSTR_ADD";
+  case INSTR_SUB:        return "INSTR_SUB";
+  case INSTR_MUL:        return "INSTR_MUL";
+  case INSTR_DIV:        return "INSTR_DIV";
+  case INSTR_MOD:        return "INSTR_MOD";
+  case INSTR_ADDF:       return "INSTR_ADDF";
+  case INSTR_SUBF:       return "INSTR_SUBF";
+  case INSTR_MULF:       return "INSTR_MULF";
+  case INSTR_DIVF:       return "INSTR_DIVF";
+  case INSTR_EQ:         return "INSTR_EQ";
+  case INSTR_NEQ:        return "INSTR_NEQ";
+  case INSTR_LT:         return "INSTR_LT";
+  case INSTR_LE:         return "INSTR_LE";
+  case INSTR_GT:         return "INSTR_GT";
+  case INSTR_GE:         return "INSTR_GE";
+  case INSTR_DUP:        return "INSTR_DUP";
+  case INSTR_OVER:       return "INSTR_OVER";
+  case INSTR_SWAP:       return "INSTR_SWAP";
+  case INSTR_DROP:       return "INSTR_DROP";
+  case INSTR_ROT:        return "INSTR_ROT";
+  case INSTR_JMP:        return "INSTR_JMP";
+  case INSTR_JZ:         return "INSTR_JZ";
+  case INSTR_JNZ:        return "INSTR_JNZ";
+  case INSTR_DUMP:       return "INSTR_DUMP";
+  case INSTR_DONE:       return "INSTR_DONE";
+  case INSTR_COUNT:      return "INSTR_COUNT";
+  default:               assert(0 && "unreachable");
   }
   // clang-format on
 }
 
-void compile(void) {
+int compiler_get_label_addr(SV label_name) {
+  for (int i = 0; i < vm.labels_count; ++i) {
+    if (sv_eq(label_name, vm.labels[i].name))
+      return vm.labels[i].addr;
+  }
+  return -1;
+}
+
+bool compile(void) {
+  Label unresolved_labels[LABELS_CAPACITY] = {0};
+  int ulc = 0;
+
+  // First pass
   for (Token *token = next_token(); token->type != TOK_EOF; token = next_token()) {
     // clang-format off
-    static_assert(TOK_COUNT == 29, "Update TokenType is required");
+    static_assert(TOK_COUNT == 31, "Update TokenType is required");
     switch (token->type) {
     case TOK_INT: {
       int i = atoi(token->source.data);
@@ -916,6 +971,20 @@ void compile(void) {
       SV string = {(char *)token->source.data, token->source.len};
       vm_push_instr(INSTR_STRING, (Word){.word=(word_t)&string});
     } break;
+
+  case TOK_LABEL: {
+    SV label_name = sva(token->source); // skip '
+    vm_push_instr(INSTR_LABEL, (Word){.word=(word_t)&label_name});
+  } break;
+
+  case TOK_LABEL_ADDR: {
+    SV label_name = sva(token->source); // skip &
+    // NOTE: INSTR_LABEL_ADDR pushes intstruction and reserves the next word for operand to be back-patched later
+    unresolved_labels[ulc++] = (Label){label_name, vm.ip+1};
+    vm_push_instr(INSTR_LABEL_ADDR, word0);
+    assert(ulc < LABELS_CAPACITY);
+  } break;
+
 
     case TOK_PLUS:      vm_push_instr(INSTR_ADD, word0); break;
     case TOK_MINUS:     vm_push_instr(INSTR_SUB, word0); break;
@@ -947,6 +1016,16 @@ void compile(void) {
     // clang-format off
   }
   vm_push_instr(INSTR_DONE, word0);
+
+  // Second pass: labels resolution
+  for (int i = 0; i < ulc; ++i) {
+    int addr = compiler_get_label_addr(unresolved_labels[i].name);
+    if (addr < 0)
+      return false; // TODO: compiler error
+    vm.program[unresolved_labels[i].addr] = (Word){.integer = addr};
+  }
+
+  return true;
 }
 
 int get_file_size(const char *filename) {
@@ -1057,7 +1136,8 @@ int main(int argc, char *argv[]) {
 
   if (!tokenize(source_arena.chunk->mem, source_filename))
     return 1;
-  compile();
+  if (!compile())
+    return 1;
   vm_run();
 
   tokens_free();
